@@ -118,11 +118,27 @@ select,input[type=text],input[type=number]{
   padding:16px max(16px,env(safe-area-inset-right,0px)) calc(16px + env(safe-area-inset-bottom,0px)) max(16px,env(safe-area-inset-left,0px));
   display:grid;gap:14px;
 }
-.viewer img{width:100%;max-height:58vh;object-fit:contain;background:var(--surface-2);border-radius:8px}
+.viewer img{width:100%;max-height:46vh;object-fit:contain;background:var(--surface-2);border-radius:8px}
 .qs-head{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+.thumb.sel{outline:3px solid var(--accent);outline-offset:-3px}
+.thumb .chk{position:absolute;right:4px;top:4px;background:var(--accent);color:var(--accent-ink);border-radius:50%;width:22px;height:22px;display:grid;place-items:center;font:700 .8rem var(--font-body)}
+.crop-wrap{display:flex;justify-content:center;padding:16px;background:var(--surface-2);border-radius:8px;overflow:hidden}
+.crop-stage{position:relative;display:inline-block;line-height:0;max-width:100%}
+.crop-stage img{display:block;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
+.crop-box{position:absolute;box-sizing:border-box;border:2px solid #fff;outline:1px solid rgba(0,0,0,.5);box-shadow:0 0 0 9999px rgba(0,0,0,.55);cursor:move;touch-action:none}
+.crop-box .h{position:absolute;width:32px;height:32px;margin:-16px 0 0 -16px;touch-action:none}
+.crop-box .h::after{content:'';position:absolute;left:50%;top:50%;width:14px;height:14px;margin:-7px 0 0 -7px;background:#fff;border:2px solid var(--accent);border-radius:3px;box-sizing:border-box}
+.h[data-h=nw]{left:0;top:0;cursor:nwse-resize}
+.h[data-h=n]{left:50%;top:0;cursor:ns-resize}
+.h[data-h=ne]{left:100%;top:0;cursor:nesw-resize}
+.h[data-h=e]{left:100%;top:50%;cursor:ew-resize}
+.h[data-h=se]{left:100%;top:100%;cursor:nwse-resize}
+.h[data-h=s]{left:50%;top:100%;cursor:ns-resize}
+.h[data-h=sw]{left:0;top:100%;cursor:nesw-resize}
+.h[data-h=w]{left:0;top:50%;cursor:ew-resize}
 .toast{
   position:fixed;left:50%;transform:translateX(-50%);bottom:calc(96px + env(safe-area-inset-bottom,0px));z-index:60;
-  background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:8px;max-width:90vw;font-size:.92rem;
+  background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:8px;max-width:90vw;font-size:.92rem;pointer-events:none;
 }
 [hidden]{display:none!important}
 @media (min-width:640px){.overlay{align-items:center}.sheet{border-radius:14px}}
@@ -170,6 +186,7 @@ select,input[type=text],input[type=number]{
       <button class="btn" data-action="camera">Tomar foto</button>
     </div>
     <p class="hint" id="upload-hint" style="margin:0">Puedes elegir todas las hojas de una vez.</p>
+    <div class="row grow" id="sel-row" hidden></div>
     <ul class="grid" id="grid"></ul>
   </section>
 
@@ -220,7 +237,7 @@ const dbDel=(s,k)=>tx(s,'readwrite',st=>st.delete(k));
 
 /* ---------- Estado ---------- */
 const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,8);
-const state={projects:[],photos:[],projectId:null,week:null};
+const state={projects:[],photos:[],projectId:null,week:null,selecting:false,selected:new Set(),selKey:''};
 const urls=new Map();
 const $=s=>document.querySelector(s);
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -283,10 +300,10 @@ async function processFile(file){
   if(bmp.close) bmp.close();
   return {blob:await toBlob(c),w:c.width,h:c.height};
 }
-async function rotateBlob(blob){
+async function rotateBlob(blob,dir){
   const bmp=await loadBitmap(blob);
   const c=document.createElement('canvas'); c.width=bmp.height; c.height=bmp.width;
-  const g=c.getContext('2d'); g.translate(c.width/2,c.height/2); g.rotate(Math.PI/2); g.drawImage(bmp,-bmp.width/2,-bmp.height/2);
+  const g=c.getContext('2d'); g.translate(c.width/2,c.height/2); g.rotate((dir||1)*Math.PI/2); g.drawImage(bmp,-bmp.width/2,-bmp.height/2);
   if(bmp.close) bmp.close();
   return {blob:await toBlob(c),w:c.width,h:c.height};
 }
@@ -311,6 +328,10 @@ async function addFiles(files){
 /* ---------- Render ---------- */
 function render(){
   const p=project(); const photos=weekPhotos(); const n=photos.length; const exp=expectedFor(p,state.week);
+  const selKey=state.projectId+'|'+state.week;
+  if(state.selKey!==selKey){state.selKey=selKey;state.selecting=false;state.selected=new Set()}
+  state.selected=new Set([...state.selected].filter(id=>photos.some(f=>f.id===id)));
+  if(!n) state.selecting=false;
   // controles
   const sel=$('#project-select');
   sel.innerHTML=state.projects.map(x=>'<option value="'+esc(x.id)+'">'+esc(x.name)+'</option>').join('');
@@ -325,7 +346,18 @@ function render(){
   const pr=$('#progress'); pr.className='progress'+(n>=exp?' done':'');
   pr.firstElementChild.style.width=Math.min(100,exp?n/exp*100:0)+'%';
   $('#upload-hint').textContent=n===0?'Puedes elegir todas las hojas de una vez.':(n>exp?'Hay más hojas de las esperadas. Revisa que no haya repetidas.':'Toca una hoja para verla, girarla, moverla o eliminarla.');
-  $('#grid').innerHTML=photos.map((f,i)=>'<li><button class="thumb" data-action="view" data-id="'+f.id+'" style="background-image:url('+thumbUrl(f)+')" aria-label="Ver hoja '+(i+1)+'"><span class="n">'+(i+1)+'</span></button></li>').join('');
+  if(state.selecting) $('#upload-hint').textContent='Toca las hojas que quieres eliminar.';
+  $('#grid').innerHTML=photos.map((f,i)=>{
+    const on=state.selected.has(f.id);
+    return '<li><button class="thumb'+(on?' sel':'')+'" data-action="view" data-id="'+f.id+'" style="background-image:url('+thumbUrl(f)+')" aria-label="'+(state.selecting?(on?'Quitar selección de hoja ':'Seleccionar hoja '):'Ver hoja ')+(i+1)+'"'+(state.selecting?' aria-pressed="'+on+'"':'')+'><span class="n">'+(i+1)+'</span>'+(on?'<span class="chk">✓</span>':'')+'</button></li>';
+  }).join('');
+  const sr=$('#sel-row'); sr.hidden=!n;
+  if(n&&state.selecting){
+    const k=state.selected.size;
+    sr.innerHTML='<button class="btn" data-action="sel-all">'+(k===n?'Quitar todas':'Todas')+'</button><button class="btn danger" data-action="sel-delete"'+(k?'':' disabled')+'>Eliminar ('+k+')</button><button class="btn" data-action="sel-end">Listo</button>';
+  } else if(n){
+    sr.innerHTML='<button class="btn" data-action="sel-start">Seleccionar para eliminar</button>';
+  }
   // resumen de proyectos
   const ov=$('#overview'); ov.hidden=false;
   ov.innerHTML='<div class="ov-head"><h2>Todos los proyectos esta semana</h2><button class="btn small" data-action="m-new">＋ Proyecto</button></div>'+state.projects.map(x=>{
@@ -383,13 +415,80 @@ function openViewer(id){
   $('#modal').innerHTML='<div class="overlay" data-action="close-modal"><div class="sheet viewer" role="dialog" aria-label="Hoja de bitácora">'+
     '<div class="qs-head"><h2 style="font-size:1.1rem">Hoja '+(i+1)+' de '+list.length+'</h2></div>'+
     '<img src="'+thumbUrl(f)+'" alt="Hoja '+(i+1)+'">'+
+    '<div class="row grow"><button class="btn" data-action="rotate" data-dir="-1" data-id="'+f.id+'">↶ Girar izq.</button>'+
+    '<button class="btn" data-action="rotate" data-dir="1" data-id="'+f.id+'">↷ Girar der.</button>'+
+    '<button class="btn" data-action="crop" data-id="'+f.id+'">Recortar</button></div>'+
     '<div class="row grow"><button class="btn" data-action="move-prev" data-id="'+f.id+'"'+(i===0?' disabled':'')+'>← Antes</button>'+
     '<button class="btn" data-action="move-next" data-id="'+f.id+'"'+(i===list.length-1?' disabled':'')+'>Después →</button>'+
-    '<button class="btn" data-action="rotate" data-id="'+f.id+'">Girar</button></div>'+
-    '<div class="row grow"><button class="btn danger" data-action="delete-photo" data-id="'+f.id+'">Eliminar</button>'+
+    (f.orig?'<button class="btn" data-action="restore-orig" data-id="'+f.id+'">Restaurar original</button>':'')+'</div>'+
+    '<div class="row grow"><button class="btn danger" data-action="delete-photo" data-id="'+f.id+'">Eliminar esta hoja</button>'+
     '<button class="btn primary" data-action="close-modal-btn">Listo</button></div></div></div>';
 }
 function closeModal(){$('#modal').innerHTML=''}
+function keepOrig(f){ if(!f.orig) f.orig={blob:f.blob,w:f.w,h:f.h}; }
+
+/* ---------- Recorte ---------- */
+const crop={id:null,x0:.05,y0:.05,x1:.95,y1:.95,drag:null};
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+function paintCrop(){
+  const b=$('.crop-box'); if(!b) return;
+  b.style.left=crop.x0*100+'%'; b.style.top=crop.y0*100+'%';
+  b.style.width=(crop.x1-crop.x0)*100+'%'; b.style.height=(crop.y1-crop.y0)*100+'%';
+}
+function openCrop(id){
+  const list=weekPhotos(); const i=list.findIndex(x=>x.id===id); if(i<0) return;
+  const f=list[i];
+  crop.id=id; crop.x0=.05; crop.y0=.05; crop.x1=.95; crop.y1=.95; crop.drag=null;
+  const hs=['nw','n','ne','e','se','s','sw','w'].map(h=>'<i class="h" data-h="'+h+'"></i>').join('');
+  $('#modal').innerHTML='<div class="overlay" data-action="close-modal"><div class="sheet" role="dialog" aria-label="Recortar hoja">'+
+    '<div class="qs-head"><h2 style="font-size:1.1rem">Recortar hoja '+(i+1)+'</h2><span class="hint">Arrastra los bordes</span></div>'+
+    '<div class="crop-wrap"><div class="crop-stage"><img src="'+thumbUrl(f)+'" alt="Hoja '+(i+1)+'" draggable="false"><div class="crop-box">'+hs+'</div></div></div>'+
+    '<div class="row grow"><button class="btn" data-action="crop-reset">Toda la hoja</button><button class="btn" data-action="crop-cancel">Cancelar</button><button class="btn primary" data-action="crop-apply">Recortar</button></div>'+
+    '<p class="hint" style="margin:0">Lo de afuera del recuadro se quita. Después puedes volver al original con Restaurar original.</p></div></div>';
+  const wrap=$('.crop-wrap'), img=$('.crop-stage img'), box=$('.crop-box'), stage=$('.crop-stage');
+  const s=Math.min(1,(wrap.clientWidth-32)/f.w,(window.innerHeight*0.5)/f.h);
+  img.style.width=Math.round(f.w*s)+'px'; img.style.height=Math.round(f.h*s)+'px';
+  paintCrop();
+  const MIN=.06;
+  box.addEventListener('pointerdown',e=>{
+    const h=(e.target.dataset&&e.target.dataset.h)||'move';
+    crop.drag={h:h,sx:e.clientX,sy:e.clientY,x0:crop.x0,y0:crop.y0,x1:crop.x1,y1:crop.y1,w:stage.clientWidth,ht:stage.clientHeight};
+    try{box.setPointerCapture(e.pointerId)}catch(_){}
+    e.preventDefault();
+  });
+  box.addEventListener('pointermove',e=>{
+    const d=crop.drag; if(!d) return;
+    const dx=(e.clientX-d.sx)/d.w, dy=(e.clientY-d.sy)/d.ht;
+    if(d.h==='move'){
+      const w=d.x1-d.x0, hh=d.y1-d.y0;
+      const nx=clamp(d.x0+dx,0,1-w), ny=clamp(d.y0+dy,0,1-hh);
+      crop.x0=nx; crop.x1=nx+w; crop.y0=ny; crop.y1=ny+hh;
+    } else {
+      if(d.h.includes('w')) crop.x0=clamp(d.x0+dx,0,d.x1-MIN);
+      if(d.h.includes('e')) crop.x1=clamp(d.x1+dx,d.x0+MIN,1);
+      if(d.h.includes('n')) crop.y0=clamp(d.y0+dy,0,d.y1-MIN);
+      if(d.h.includes('s')) crop.y1=clamp(d.y1+dy,d.y0+MIN,1);
+    }
+    paintCrop();
+  });
+  const end=()=>{crop.drag=null};
+  box.addEventListener('pointerup',end); box.addEventListener('pointercancel',end);
+}
+async function applyCrop(btn){
+  const f=state.photos.find(x=>x.id===crop.id); if(!f) return;
+  btn.disabled=true;
+  try{
+    const bmp=await loadBitmap(f.blob);
+    const sx=Math.round(crop.x0*bmp.width), sy=Math.round(crop.y0*bmp.height);
+    const sw=Math.max(1,Math.round((crop.x1-crop.x0)*bmp.width)), sh=Math.max(1,Math.round((crop.y1-crop.y0)*bmp.height));
+    const c=document.createElement('canvas'); c.width=sw; c.height=sh;
+    const g=c.getContext('2d'); g.fillStyle='#fff'; g.fillRect(0,0,sw,sh); g.drawImage(bmp,sx,sy,sw,sh,0,0,sw,sh);
+    if(bmp.close) bmp.close();
+    const blob=await toBlob(c);
+    keepOrig(f); f.blob=blob; f.w=sw; f.h=sh; dropUrl(f.id);
+    await dbPut('photos',f); render(); openViewer(f.id); toast('Recorte aplicado');
+  }catch(e){ btn.disabled=false; toast('No se pudo recortar la foto',3500); }
+}
 async function move(id,dir){
   const list=weekPhotos(); const i=list.findIndex(x=>x.id===id); const j=i+dir;
   if(i<0||j<0||j>=list.length) return;
@@ -435,20 +534,53 @@ document.addEventListener('click',async ev=>{
     case 'goto': state.projectId=el.dataset.id; saveSel(); render(); window.scrollTo({top:0,behavior:'smooth'}); break;
     case 'camera': $('#in-camera').click(); break;
     case 'files': $('#in-files').click(); break;
-    case 'view': openViewer(el.dataset.id); break;
+    case 'view': {
+      if(state.selecting){
+        const id=el.dataset.id; if(state.selected.has(id)) state.selected.delete(id); else state.selected.add(id);
+        confirmKey=null; render();
+      } else openViewer(el.dataset.id);
+      break;
+    }
+    case 'sel-start': state.selecting=true; state.selected=new Set(); render(); break;
+    case 'sel-end': state.selecting=false; state.selected=new Set(); confirmKey=null; render(); break;
+    case 'sel-all': {
+      const all=weekPhotos(); confirmKey=null;
+      state.selected=(state.selected.size===all.length)?new Set():new Set(all.map(f=>f.id)); render(); break;
+    }
+    case 'sel-delete': {
+      const k=state.selected.size; if(!k) break;
+      if(!needConfirm(el,'delsel','¿Eliminar '+k+(k===1?' hoja':' hojas')+'? Toca otra vez')) break;
+      for(const id of [...state.selected]){ await dbDel('photos',id); dropUrl(id); }
+      state.photos=state.photos.filter(x=>!state.selected.has(x.id));
+      state.selected=new Set(); state.selecting=false; render();
+      toast(k+(k===1?' hoja eliminada':' hojas eliminadas')); break;
+    }
+    case 'crop': openCrop(el.dataset.id); break;
+    case 'crop-cancel': openViewer(crop.id); break;
+    case 'crop-reset': crop.x0=0; crop.y0=0; crop.x1=1; crop.y1=1; paintCrop(); break;
+    case 'crop-apply': applyCrop(el); break;
+    case 'restore-orig': {
+      const f=state.photos.find(x=>x.id===el.dataset.id); if(!f||!f.orig) break;
+      f.blob=f.orig.blob; f.w=f.orig.w; f.h=f.orig.h; delete f.orig; dropUrl(f.id);
+      await dbPut('photos',f); render(); openViewer(f.id); toast('Foto original restaurada'); break;
+    }
     case 'move-prev': move(el.dataset.id,-1); break;
     case 'move-next': move(el.dataset.id,1); break;
     case 'rotate': {
       const f=state.photos.find(x=>x.id===el.dataset.id); if(!f) break;
       el.disabled=true;
-      try{const r=await rotateBlob(f.blob); f.blob=r.blob;f.w=r.w;f.h=r.h; dropUrl(f.id); await dbPut('photos',f); render(); openViewer(f.id);}
+      try{const r=await rotateBlob(f.blob,+el.dataset.dir||1); keepOrig(f); f.blob=r.blob;f.w=r.w;f.h=r.h; dropUrl(f.id); await dbPut('photos',f); render(); openViewer(f.id);}
       catch(e){toast('No se pudo girar la foto')}
       break;
     }
     case 'delete-photo': {
       if(!needConfirm(el,'del-'+el.dataset.id,'¿Eliminar? Toca otra vez')) break;
-      const id=el.dataset.id; await dbDel('photos',id); dropUrl(id);
-      state.photos=state.photos.filter(x=>x.id!==id); closeModal(); render(); toast('Foto eliminada'); break;
+      const id=el.dataset.id; const idx=weekPhotos().findIndex(x=>x.id===id);
+      await dbDel('photos',id); dropUrl(id);
+      state.photos=state.photos.filter(x=>x.id!==id); render();
+      const rest=weekPhotos();
+      if(rest.length) openViewer(rest[Math.min(idx,rest.length-1)].id); else closeModal();
+      toast('Foto eliminada'); break;
     }
     case 'exp-minus': setExpected(expectedFor(project(),state.week)-1); break;
     case 'exp-plus': setExpected(expectedFor(project(),state.week)+1); break;
